@@ -168,6 +168,11 @@ footer p {
   font-size: .9rem
 }
 
+.footer{
+  text-align: center;
+}
+
+
 /***    Register Page     ***/
 #checkbox {
   width: 1rem
