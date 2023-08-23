@@ -9,8 +9,6 @@ terraform {
 
 provider "aws" {
   region = "ap-southeast-1"
-  access_key = "AKIA5WCA6ZQSDSJFFKER"
-  secret_key = "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"
 }
 
 # 2 - create repository
