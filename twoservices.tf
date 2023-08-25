@@ -9,6 +9,8 @@ terraform {
 
 provider "aws" {
   region = "ap-southeast-1"
+  access_key = ""
+  secret_key = ""
 }
 
 # 2 - create repository
@@ -40,7 +42,7 @@ resource "aws_ecs_task_definition" "docker_task" {
   [
     {
       "name": "docker-task",
-      "image": "${aws_ecr_repository.hello_vijay_repo.repository_url}",
+      "image": "${aws_ecr_repository.frontend_ecr_repo.repository_url}",
       "essential": true,
       "portMappings": [
         {
@@ -57,7 +59,7 @@ resource "aws_ecs_task_definition" "docker_task" {
   network_mode             = "awsvpc"    # add the AWS VPN network mode as this is required for Fargate
   memory                   = 512         # Specify the memory the container requires
   cpu                      = 256         # Specify the CPU the container requires
-  execution_role_arn       = "${aws_iam_role.ecsTaskExecutionRole-docker.arn}"
+  execution_role_arn       = "${aws_iam_role.ecs_task_execution_role.arn}"
 }
 
 resource "aws_ecs_task_definition" "hello_vijay_task" {
@@ -66,7 +68,7 @@ resource "aws_ecs_task_definition" "hello_vijay_task" {
   [
     {
       "name": "hello-vijay-task",
-      "image": "${aws_ecr_repository.frontend_ecr_repo.repository_url}",
+      "image": "${aws_ecr_repository.hello_vijay_repo.repository_url}",
       "essential": true,
       "portMappings": [
         {
@@ -83,28 +85,33 @@ resource "aws_ecs_task_definition" "hello_vijay_task" {
   network_mode             = "awsvpc"    # add the AWS VPN network mode as this is required for Fargate
   memory                   = 512         # Specify the memory the container requires
   cpu                      = 256         # Specify the CPU the container requires
-  execution_role_arn       = "${aws_iam_role.ecsTaskExecutionRole-docker.arn}"
+  execution_role_arn       = "${aws_iam_role.ecs_task_execution_role.arn}"
 }
 
 # 3.1 - create task execution role
-resource "aws_iam_role" "ecsTaskExecutionRole-docker" {
-  name               = "ecsTaskExecutionRole-docker"
-  assume_role_policy = "${data.aws_iam_policy_document.assume_role_policy.json}"
+
+resource "aws_iam_role" "ecs_task_execution_role" {
+  name = "ecs_task_execution_role"
+ 
+  assume_role_policy = <<EOF
+{
+ "Version": "2012-10-17",
+ "Statement": [
+   {
+     "Action": "sts:AssumeRole",
+     "Principal": {
+       "Service": "ecs-tasks.amazonaws.com"
+     },
+     "Effect": "Allow",
+     "Sid": ""
+   }
+ ]
 }
-
-data "aws_iam_policy_document" "assume_role_policy" {
-  statement {
-    actions = ["sts:AssumeRole"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["ecs-tasks.amazonaws.com"]
-    }
-  }
+EOF
 }
-
-resource "aws_iam_role_policy_attachment" "ecsTaskExecutionRole_docker_policy" {
-  role       = "${aws_iam_role.ecsTaskExecutionRole-docker.name}"
+ 
+resource "aws_iam_role_policy_attachment" "ecs-task-execution-role-policy-attachment" {
+  role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
@@ -169,7 +176,7 @@ resource "aws_route_table_association" "assoc-rt-docker-2" {
 }
 
 # 4 - create alb
-resource "aws_alb" "application_load_balancer" {
+resource "aws_lb" "application_load_balancer" {
   name               = "load-balancer-docker" #load balancer name
   load_balancer_type = "application"
   subnets = ["${aws_subnet.pub-docker-1.id}", "${aws_subnet.pub-docker-2.id}"]
@@ -200,23 +207,43 @@ resource "aws_security_group" "load_balancer_docker_security_group" {
 # 4.3 - create tg for alb
 resource "aws_lb_target_group" "default_target_group" {
   name        = "default-target-group"
-  port        = 80
+  port        = 5000
   protocol    = "HTTP"
   target_type = "ip"
   vpc_id      = "${aws_vpc.vpc-docker.id}" # default VPC
+
+  health_check {
+    path = "/"
+    port = 5000
+    healthy_threshold = 6
+    unhealthy_threshold = 2
+    timeout = 2
+    interval = 5
+    matcher = "200"  # has to be HTTP 200 or fails
+  }
 }
 
 resource "aws_lb_target_group" "hello_vijay_target_group" {
   name        = "hello-vijay-target-group"
-  port        = 80
+  port        = 5003
   protocol    = "HTTP"
   target_type = "ip"
   vpc_id      = "${aws_vpc.vpc-docker.id}" # default VPC
+
+    health_check {
+    path = "/hello_vijay"
+    port = 5003
+    healthy_threshold = 6
+    unhealthy_threshold = 2
+    timeout = 2
+    interval = 5
+    matcher = "200"  # has to be HTTP 200 or fails
+  }
 }
 
 # 4.4 - create alb listener
 resource "aws_lb_listener" "listener" {
-  load_balancer_arn = "${aws_alb.application_load_balancer.arn}" #  load balancer
+  load_balancer_arn = "${aws_lb.application_load_balancer.arn}" #  load balancer
   port              = "80"
   protocol          = "HTTP"
   default_action {
@@ -225,7 +252,7 @@ resource "aws_lb_listener" "listener" {
   }
 }
 
-resource "aws_alb_listener_rule" "listener_rule_hello_vijay" {
+resource "aws_lb_listener_rule" "listener_rule_hello_vijay" {
   depends_on = [
     aws_lb_target_group.hello_vijay_target_group,  # Dependency on the new listener rule
   ] 
@@ -260,6 +287,7 @@ resource "aws_ecs_service" "docker_service" {
     assign_public_ip = true     # Provide the containers with public IPs
     security_groups  = ["${aws_security_group.service_security_group.id}"] # Set up the security group
   }
+
 }
 
 resource "aws_ecs_service" "docker_service_hello_vijay" {
@@ -282,19 +310,27 @@ resource "aws_ecs_service" "docker_service_hello_vijay" {
   }
 
   depends_on = [
-    aws_alb_listener_rule.listener_rule_hello_vijay,  # Dependency on the new listener rule
+    aws_lb_listener_rule.listener_rule_hello_vijay,  # Dependency on the new listener rule
   ]
 }
 
 # 5.2 - create sg for the service
 resource "aws_security_group" "service_security_group" {
   vpc_id = aws_vpc.vpc-docker.id
+
   ingress {
     from_port = 0
     to_port   = 0
     protocol  = "-1"
     # Only allowing traffic in from the load balancer security group
     security_groups = ["${aws_security_group.load_balancer_docker_security_group.id}"]
+  }
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # Allow traffic in from all sources
   }
 
   egress {
@@ -308,5 +344,5 @@ resource "aws_security_group" "service_security_group" {
 # main.tf
 #Log the load balancer app URL
 output "docker_url" {
-  value = aws_alb.application_load_balancer.dns_name
+  value = aws_lb.application_load_balancer.dns_name
 }
